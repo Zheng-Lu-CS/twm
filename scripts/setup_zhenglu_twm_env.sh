@@ -116,7 +116,9 @@ fi
 conda activate "$ENV_NAME"
 python -VV
 python -m pip config set global.index-url "$PIP_INDEX_URL_DEFAULT"
-python -m pip install --upgrade pip setuptools wheel --index-url "$PIP_INDEX_URL_DEFAULT"
+python -m pip install --upgrade pip wheel --index-url "$PIP_INDEX_URL_DEFAULT"
+# wandb==0.12.21 imports pkg_resources; keep setuptools on a version that still provides it.
+python -m pip install setuptools==65.5.1 --index-url "$PIP_INDEX_URL_DEFAULT"
 
 echo "== Installing PyTorch for H100 =="
 echo "Using PyTorch CUDA wheel index: $PYTORCH_INDEX_URL"
@@ -130,6 +132,7 @@ python -m pip install \
     Pillow==9.2.0 \
     pygame==2.1.0 \
     wandb==0.12.21 \
+    setuptools==65.5.1 \
     opencv-python-headless==4.11.0.86 \
     "AutoROM[accept-rom-license]" \
     packaging \
