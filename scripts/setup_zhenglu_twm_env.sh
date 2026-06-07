@@ -15,6 +15,8 @@ PIP_INDEX_URL_DEFAULT="https://pypi.tuna.tsinghua.edu.cn/simple"
 PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cu121"
 
 export WANDB_MODE=disabled
+export WANDB_DISABLE_GIT=true
+export WANDB_DISABLE_CODE=true
 export SDL_VIDEODRIVER=dummy
 export OMP_NUM_THREADS=16
 export MKL_NUM_THREADS=16
@@ -24,10 +26,6 @@ echo "== TWM H100 setup =="
 echo "Root: $ROOT"
 echo "Log:  $LOG_FILE"
 echo "Time: $(date -Is)"
-
-if command -v git >/dev/null 2>&1 && [[ -d "$ROOT/.git" ]]; then
-    git config --global --add safe.directory "$ROOT" || true
-fi
 
 load_conda() {
     if command -v conda >/dev/null 2>&1; then

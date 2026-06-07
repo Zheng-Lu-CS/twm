@@ -29,12 +29,28 @@ LOG_FILE="${TWM_LOG_FILE:-$ROOT/logs/train_${GAME}_seed${SEED}_gpu${GPU_LABEL}_$
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 ENV_NAME="zhenglu_twm"
+RUNTIME_ROOT="${TWM_RUNTIME_ROOT:-/dev/shm/twm_${USER:-root}}"
+if ! mkdir -p "$RUNTIME_ROOT" 2>/dev/null; then
+    RUNTIME_ROOT="$ROOT/logs/runtime_${USER:-root}"
+    mkdir -p "$RUNTIME_ROOT"
+fi
 
 export WANDB_MODE=disabled
+export WANDB_DISABLE_GIT=true
+export WANDB_DISABLE_CODE=true
+export WANDB_CONSOLE=off
+export WANDB_DIR="$RUNTIME_ROOT/wandb"
+export WANDB_CACHE_DIR="$RUNTIME_ROOT/wandb_cache"
 export SDL_VIDEODRIVER=dummy
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-16}"
-export MKL_NUM_THREADS="${MKL_NUM_THREADS:-16}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${TWM_NUM_THREADS:-16}}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-${TWM_NUM_THREADS:-16}}"
+export TMPDIR="$RUNTIME_ROOT/tmp"
+export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-LAZY}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export TORCH_ALLOW_TF32_CUBLAS_OVERRIDE="${TORCH_ALLOW_TF32_CUBLAS_OVERRIDE:-1}"
+export NVIDIA_TF32_OVERRIDE="${NVIDIA_TF32_OVERRIDE:-1}"
 export PYTHONUNBUFFERED=1
+mkdir -p "$WANDB_DIR" "$WANDB_CACHE_DIR" "$TMPDIR"
 
 load_conda() {
     if command -v conda >/dev/null 2>&1; then
@@ -67,10 +83,9 @@ echo "GPU:  $GPU_ID"
 echo "Seed: $SEED"
 echo "Log:  $LOG_FILE"
 echo "Time: $(date -Is)"
-
-if command -v git >/dev/null 2>&1 && [[ -d "$ROOT/.git" ]]; then
-    git config --global --add safe.directory "$ROOT" || true
-fi
+echo "Runtime scratch: $RUNTIME_ROOT"
+echo "W&B git/code probing: disabled"
+echo "TF32 override: TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=$TORCH_ALLOW_TF32_CUBLAS_OVERRIDE NVIDIA_TF32_OVERRIDE=$NVIDIA_TF32_OVERRIDE"
 
 load_conda
 conda activate "$ENV_NAME"
@@ -80,6 +95,8 @@ CUDA_VISIBLE_DEVICES="$GPU_ID" python - <<'PY'
 import torch
 
 print("torch:", torch.__version__)
+print("torch.backends.cuda.matmul.allow_tf32:", torch.backends.cuda.matmul.allow_tf32)
+print("torch.backends.cudnn.allow_tf32:", torch.backends.cudnn.allow_tf32)
 print("torch.cuda.is_available():", torch.cuda.is_available())
 if not torch.cuda.is_available():
     raise RuntimeError("cuda:0 is not available after CUDA_VISIBLE_DEVICES binding")
@@ -97,9 +114,28 @@ CUDA_VISIBLE_DEVICES="$GPU_ID" python -O twm/main.py \
     --game "$GAME" \
     --seed "$SEED" \
     --device cuda:0 \
+    --buffer_device cuda:0 \
     --cpu_p 1.0 \
-    --wandb disabled
+    --wandb disabled &
+TRAIN_PID=$!
+
+HEARTBEAT_SEC="${TWM_HEARTBEAT_SEC:-300}"
+(
+    while kill -0 "$TRAIN_PID" 2>/dev/null; do
+        sleep "$HEARTBEAT_SEC"
+        if kill -0 "$TRAIN_PID" 2>/dev/null; then
+            echo "== heartbeat $(date -Is): game=$GAME pid=$TRAIN_PID gpu=$GPU_ID =="
+            ps -o pid,ppid,etime,pcpu,pmem,rss,vsz,stat,cmd -p "$TRAIN_PID" || true
+            CUDA_VISIBLE_DEVICES="$GPU_ID" nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits || true
+        fi
+    done
+) &
+MONITOR_PID=$!
+
+wait "$TRAIN_PID"
 RC=$?
+kill "$MONITOR_PID" 2>/dev/null || true
+wait "$MONITOR_PID" 2>/dev/null || true
 set -e
 
 if (( RC != 0 )); then

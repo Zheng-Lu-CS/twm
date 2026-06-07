@@ -13,6 +13,8 @@ ENV_NAME="zhenglu_twm"
 FAIL=0
 
 export WANDB_MODE=disabled
+export WANDB_DISABLE_GIT=true
+export WANDB_DISABLE_CODE=true
 export SDL_VIDEODRIVER=dummy
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-16}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-16}"
@@ -21,10 +23,6 @@ export PYTHONUNBUFFERED=1
 echo "== TWM H100 environment check =="
 echo "Root: $ROOT"
 echo "Log:  $LOG_FILE"
-
-if command -v git >/dev/null 2>&1 && [[ -d "$ROOT/.git" ]]; then
-    git config --global --add safe.directory "$ROOT" || true
-fi
 
 mark_fail() {
     echo "ERROR: $*"
