@@ -1,0 +1,220 @@
+你现在位于 TWM 官方代码库根目录。目标是在不改变官方训练超参和算法逻辑的前提下，为云端 H100 服务器准备可复现环境配置脚本、检查脚本、以及 2 卡 H100 一键运行 Breakout/Boxing/Seaquest/RoadRunner 四组实验的启动脚本。
+
+背景信息：
+1. 官方 repo 是 jrobine/twm，官方 README 的启动命令形式是：
+   python -O twm/main.py --game Breakout --seed 0 --device cuda:0 --cpu_p 1.0 --wandb disabled
+2. 官方 requirements.txt 是：
+   ale_py==0.8.0
+   gym==0.26.0
+   numpy==1.23.1
+   Pillow==9.2.0
+   pygame==2.1.0
+   torch==1.12.0
+   torchvision==0.13.0
+   wandb==0.12.21
+3. 但是目标云端是 H100/Hopper sm_90，官方 torch==1.12.0 CUDA wheel 不适合 H100。请不要强行使用 torch==1.12.0 跑 H100。需要保留官方 TWM 代码逻辑和训练超参，但把 PyTorch/torchvision 升级到 H100 可运行的稳定版本。
+4. 目标云端项目路径是：
+   /data/share/hxd/zhenglu/twm
+5. conda 环境名称固定为：
+   zhenglu_twm
+6. 服务器预检查输出显示：
+   - Ubuntu 24.04.2，glibc 2.39
+   - NVIDIA H100 80GB HBM3 MIG 3g.40GB 可见，driver 550.90.07，CUDA 12.9
+   - 当前系统 Python 是 3.12，但我们应创建独立 conda env，不用系统 Python
+   - 当前 torch 2.8.0a0 可用且 CUDA matmul 通过，但不要依赖系统环境
+   - gym/ale-py/pygame/wandb/cv2 缺失
+   - ffmpeg、xvfb-run、libGL、libEGL、libGLESv2、libXrender、libSM、libICE、libSDL2 可能缺失
+   - raw.githubusercontent.com 访问可能超时，但 git ls-remote GitHub 可用，PyTorch wheel index 可访问
+7. 本地无需安装环境，只需要生成脚本。所有脚本必须能在同步到云端项目根目录后执行。
+8. 所有终端输出必须记录到项目根目录 logs/ 下，方便排错。
+9. 暂时不需要记录可视化评测视频，不要打开 --save。
+10. 训练任务是 Breakout、Boxing、Seaquest、RoadRunner。每个训练进程独占一张 H100。因为是 2 卡 H100，请写成两波并发：第一波 Breakout/Boxing，第二波 Seaquest/RoadRunner。每个进程使用 CUDA_VISIBLE_DEVICES 绑定单卡，并在进程内部使用 --device cuda:0。
+11. 尽可能不要改官方超参。不要改 twm/config.py 的默认训练超参，除非只是为了添加一个 tiny smoke config，并且 tiny smoke config 必须是新 config 名称，不能覆盖 default。
+12. 不要引入复杂框架，不要 Docker，不要 Slurm。这里只要普通 bash 脚本。
+13. 能够使用清华源等加速尽量进行加速（如pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple）
+
+请你完成以下工作：
+
+A. 先仔细阅读当前仓库这些文件：
+- README.md
+- requirements.txt
+- twm/main.py
+- twm/config.py
+- twm/utils.py
+- twm/trainer.py
+- 所有和环境创建、保存、评估、日志相关的文件
+
+B. 在仓库中新增 scripts/ 目录，生成下面这些文件：
+
+1. scripts/setup_zhenglu_twm_env.sh
+
+功能要求：
+- 必须从任意位置运行都能定位到项目根目录；推荐用脚本自身路径推导 ROOT。
+- 创建 logs/ 目录。
+- 全部 stdout/stderr tee 到 logs/setup_zhenglu_twm_YYYYmmdd_HHMMSS.log。
+- 使用 conda 创建/更新环境 zhenglu_twm，Python 版本建议固定为 3.10。
+- 不要污染 base 环境。
+- pip 使用清华源作为默认源，但 PyTorch wheel 使用官方 PyTorch CUDA index。
+- 由于 H100 需要 sm_90 支持，优先安装 PyTorch H100 可用版本。建议用以下之一：
+  方案优先级 1：
+    pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
+  如果你判断 cu124 更合适，也可以用：
+    pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
+  不要安装 torch==1.12.0。
+- 其他依赖尽量保持官方版本：
+    ale_py==0.8.0
+    gym==0.26.0
+    numpy==1.23.1
+    Pillow==9.2.0
+    pygame==2.1.0
+    wandb==0.12.21
+- 额外安装：
+    opencv-python-headless
+    AutoROM[accept-rom-license]
+    packaging
+    psutil
+- 注意：opencv-python-headless 是为了避免 libGL 缺失导致 cv2 import 崩掉；不要使用 opencv-python，除非你有充分理由。
+- 安装 Atari ROM：
+    AutoROM --accept-license
+  如果 AutoROM 失败，不要静默吞掉；打印明确错误和后续人工处理提示。
+- 设置环境变量：
+    WANDB_MODE=disabled
+    SDL_VIDEODRIVER=dummy
+    OMP_NUM_THREADS=16
+    MKL_NUM_THREADS=16
+    PYTHONUNBUFFERED=1
+- 安装完成后自动运行 scripts/check_zhenglu_twm_env.sh。
+- 脚本结尾打印：
+    conda activate zhenglu_twm
+    ./scripts/check_zhenglu_twm_env.sh
+    ./scripts/run_4games_2h100.sh
+
+系统依赖处理：
+- 检查 ffmpeg、xvfb-run、libGL.so.1、libSDL2-2.0.so.0、libXrender.so.1、libSM.so.6、libICE.so.6 是否存在。
+- 如果当前用户是 root 或 sudo 可用，可以询问/通过环境变量 INSTALL_SYS_DEPS=1 控制安装：
+    apt-get update
+    apt-get install -y ffmpeg xvfb xauth libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libegl1 libgles2 libglx0 libsdl2-2.0-0
+- 默认不要强行 apt install；如果 INSTALL_SYS_DEPS=0 或无权限，只打印缺失项和建议命令。
+
+2. scripts/check_zhenglu_twm_env.sh
+
+功能要求：
+- 从任意位置运行都定位到项目根目录。
+- 全部输出 tee 到 logs/check_zhenglu_twm_YYYYmmdd_HHMMSS.log。
+- 激活 conda 环境 zhenglu_twm。
+- 打印：
+    hostname/date/uname/os-release
+    conda info/env list
+    python -VV
+    pip list
+    nvidia-smi
+    df -h / /tmp /dev/shm
+- Python 检查：
+    import torch, torchvision, gym, ale_py, numpy, PIL, pygame, wandb, cv2
+    打印每个包版本。
+    打印 torch.cuda.is_available()这里请注意：我会在云端debug和配置环境使用一张H100。正式训练再使用2张H100
+    打印 torch.version.cuda
+    打印 torch.cuda.get_arch_list()
+    打印每张 GPU 的 name/capability/显存
+    做一个 cuda matmul smoke test
+- Atari 检查：
+    from ale_py.roms.utils import rom_name_to_id
+    对 Breakout, Boxing, Seaquest, RoadRunner 做 ROM lookup
+    使用官方 twm.utils.create_atari_env 创建 Breakout 环境，reset 一次，step 一次，打印 obs shape、reward、terminated、truncated。
+- 入口检查：
+    python -O twm/main.py --help
+- 如果任何关键检查失败，脚本最后 exit 1。
+- 如果全部通过，打印明确的 OK 信息。
+
+3. scripts/run_one_twm.sh
+
+功能要求：
+- 参数：
+    GAME
+    GPU_ID
+    SEED，默认 0
+- 例子：
+    ./scripts/run_one_twm.sh Breakout 0 0
+- 激活 zhenglu_twm。
+- 创建 logs/。
+- 日志文件：
+    logs/train_${GAME}_seed${SEED}_gpu${GPU_ID}_YYYYmmdd_HHMMSS.log
+- 使用：
+    CUDA_VISIBLE_DEVICES=${GPU_ID} python -O twm/main.py --game ${GAME} --seed ${SEED} --device cuda:0 --cpu_p 1.0 --wandb disabled
+- 不要加 --save。
+- 不要改 default config。
+- 开始前运行一个轻量检查：python import torch 并确认 cuda:0 可用。
+- 训练进程的 stdout/stderr 全部 tee 到对应日志。
+- 如果训练失败，保留退出码并打印日志路径。
+
+4. scripts/run_4games_2h100.sh
+
+功能要求：
+- 一键启动 Breakout、Boxing、Seaquest、RoadRunner 四个实验。
+- 默认 seed=0，可通过 SEED=1 覆盖。
+- 默认 GPU_IDS="0,1"，可通过环境变量覆盖，例如 GPU_IDS="2,3"。
+- 解析 GPU_IDS，只允许至少两个 GPU id。
+- 两波执行：
+    第一波：
+      Breakout on GPU_IDS[0]
+      Boxing on GPU_IDS[1]
+    wait
+    第二波：
+      Seaquest on GPU_IDS[0]
+      RoadRunner on GPU_IDS[1]
+    wait
+- 每个进程调用 scripts/run_one_twm.sh。
+- 顶层日志：
+    logs/run_4games_2h100_seed${SEED}_YYYYmmdd_HHMMSS.log
+- 输出每个子进程 PID、game、GPU、log path。
+- 如果第一波任意失败，不要启动第二波，直接 exit 非零。
+- 如果第二波任意失败，exit 非零。
+- 最后打印四个训练日志路径。
+- 注意 game 名称大小写必须是官方 ALE 可识别形式：
+    Breakout
+    Boxing
+    Seaquest
+    RoadRunner
+
+5. scripts/tail_latest_logs.sh
+
+功能要求：
+- 方便查看 logs/ 下最近的日志。
+- 默认显示最近 3 个日志，每个 tail -n 80。
+- 支持参数：
+    ./scripts/tail_latest_logs.sh 5 120
+  表示最近 5 个日志，每个 120 行。
+
+C. 可选但推荐：生成 requirements 文件
+
+生成：
+- requirements-official.txt：完全保存官方 requirements。
+- requirements-h100.txt：用于 H100 的实际安装，不包含 torch 1.12.0/torchvision 0.13.0，而是包含 H100 兼容 torch/torchvision 安装说明注释，以及其他官方依赖和额外依赖。
+注意 requirements-h100.txt 不一定能单独 pip install 完成 PyTorch，因为 PyTorch 需要单独 index-url；脚本里要分开装。
+
+D. 兼容性代码修改要求
+
+原则：
+- 不要改官方训练超参。
+- 不要改算法逻辑。
+- 不要改 default config。
+- 只有当脚本检查或静态检查发现 PyTorch 2.x / Gym 0.26 / Python 3.10 下会直接运行错误时，才允许做最小兼容性 patch。
+- 如果做 patch，必须：
+  1. 注释说明为什么改；
+  2. 保持行为等价；
+  3. 在最终总结中列出改了哪些文件、哪些行附近、为什么。
+- 不要引入视频保存、不要改评估 episode 数、不要调小训练预算。
+
+E. 最后输出
+
+完成后请给我：
+1. 新增/修改文件列表。
+2. 每个脚本的用途。
+3. 云端执行顺序：
+   cd /data/share/hxd/zhenglu/twm
+   chmod +x scripts/*.sh
+   INSTALL_SYS_DEPS=1 ./scripts/setup_zhenglu_twm_env.sh
+   ./scripts/check_zhenglu_twm_env.sh
+   GPU_IDS="0,1" SEED=0 ./scripts/run_4games_2h100.sh
+4. 说明如果云端只有 MIG 设备或 CUDA_VISIBLE_DEVICES 重映射时，应该如何设置 GPU_IDS。
+5. 明确声明：没有修改官方 default 超参；如果修改了代码，只列兼容性修改。
