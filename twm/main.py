@@ -43,10 +43,6 @@ def main(args=None):
     if __debug__:
         print('Running in debug mode, consider using the -O python flag to improve performance')
 
-    # enable wandb service (experimental, https://github.com/wandb/client/blob/master/docs/dev/wandb-service-user.md)
-    # this hopefully fixes issues with multiprocessing
-    wandb.require(experiment='service')
-
     buffer_device = args.buffer_device if args.buffer_device is not None else args.device
 
     config = deepcopy(CONFIGS[args.config])
@@ -55,8 +51,17 @@ def main(args=None):
         'cpu_p': args.cpu_p, 'save': args.save
     })
 
-    wandb.init(config=config, project=args.project, group=args.group, mode=args.wandb)
-    config = dict(wandb.config)
+    if args.wandb == 'disabled':
+        # wandb==0.12.21 may still probe Git during disabled init on managed
+        # cloud filesystems. Formal disabled runs do not need W&B or Git at all.
+        wandb.log = lambda *_, **__: None
+        config = dict(config)
+    else:
+        # enable wandb service (experimental, https://github.com/wandb/client/blob/master/docs/dev/wandb-service-user.md)
+        # this hopefully fixes issues with multiprocessing
+        wandb.require(experiment='service')
+        wandb.init(config=config, project=args.project, group=args.group, mode=args.wandb)
+        config = dict(wandb.config)
 
     trainer = Trainer(config)
     trainer.print_stats()
