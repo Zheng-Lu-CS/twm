@@ -36,6 +36,63 @@ class Trainer:
         self.last_eval = 0
         self.total_eval_time = 0
 
+    @staticmethod
+    def _metric_to_float(value):
+        if isinstance(value, (int, float, np.number)):
+            return float(value)
+        if torch.is_tensor(value) and value.numel() == 1:
+            return float(value.detach().cpu())
+        return None
+
+    def _log_metrics(self, metrics, phase):
+        wandb.log(metrics)
+
+        numeric = {}
+        for key, value in metrics.items():
+            value = self._metric_to_float(value)
+            if value is not None:
+                numeric[key] = value
+
+        if len(numeric) == 0:
+            print(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] {phase}: no scalar metrics', flush=True)
+            return
+
+        preferred = [
+            'buffer/size', 'buffer/num_episodes', 'buffer/episode_score', 'buffer/episode_len',
+            'buffer/total_reward', 'buffer/visit_ent', 'eval/score_mean', 'eval/hns',
+            'eval/score_median', 'eval/score_min', 'eval/score_max', 'eval/total_time'
+        ]
+        selected = [key for key in preferred if key in numeric]
+        selected += [
+            key for key in sorted(numeric)
+            if key not in selected and (key.startswith('wm/') or key.startswith('ac/') or 'loss' in key)
+        ]
+        selected += [key for key in sorted(numeric) if key not in selected]
+        selected = selected[:18]
+
+        items = []
+        for key in selected:
+            value = numeric[key]
+            if abs(value) >= 1000 or (0 < abs(value) < 1e-3):
+                items.append(f'{key}={value:.4e}')
+            else:
+                items.append(f'{key}={value:.4f}')
+        print(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] {phase}: ' + ', '.join(items), flush=True)
+
+    @staticmethod
+    def _print_budget_progress(phase, remaining, total, next_report):
+        if total <= 0:
+            return next_report
+        done = total - max(remaining, 0)
+        if done >= next_report or remaining <= 0:
+            percent = min(done / total * 100, 100)
+            print(
+                f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] {phase}: '
+                f'{done:.0f}/{total:.0f} samples ({percent:.1f}%)',
+                flush=True)
+            next_report += max(total / 10, 1)
+        return next_report
+
     def print_stats(self):
         count_params = lambda module: sum(p.numel() for p in module.parameters() if p.requires_grad)
         agent = self.agent
@@ -121,6 +178,10 @@ class Trainer:
         self.total_eval_time = 0
 
         # prefill the buffer with randomly collected data
+        print(
+            f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] prefill: '
+            f'start target={config["buffer_prefill"]} random environment steps',
+            flush=True)
         random_policy = lambda index: replay_buffer.sample_random_action()
         for _ in range(config['buffer_prefill'] - 1):
             replay_buffer.step(random_policy)
@@ -128,7 +189,7 @@ class Trainer:
             utils.update_metrics(metrics, replay_buffer.metrics(), prefix='buffer/')
             self.summarizer.append(metrics)
             if replay_buffer.size % log_every == 0:
-                wandb.log(self.summarizer.summarize())
+                self._log_metrics(self.summarizer.summarize(), phase='prefill')
 
         # final prefill step
         replay_buffer.step(random_policy)
@@ -136,12 +197,14 @@ class Trainer:
         utils.update_metrics(metrics, replay_buffer.metrics(), prefix='buffer/')
 
         # pretrain on the prefilled data
+        print(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] pretrain: start', flush=True)
         self._pretrain()
+        print(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] pretrain: complete', flush=True)
 
         eval_metrics = self._evaluate(is_final=False)
         metrics.update(eval_metrics)
         self.summarizer.append(metrics)
-        wandb.log(self.summarizer.summarize())
+        self._log_metrics(self.summarizer.summarize(), phase='initial_eval')
 
         budget = config['budget'] - config['pretrain_budget']
         budget_per_step = 0
@@ -150,6 +213,10 @@ class Trainer:
         num_batches = budget / budget_per_step
         train_every = (replay_buffer.capacity - config['buffer_prefill']) / num_batches
 
+        print(
+            f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] train: '
+            f'start target_buffer_capacity={replay_buffer.capacity} train_every={train_every:.4f}',
+            flush=True)
         step_counter = 0
         while replay_buffer.size < replay_buffer.capacity:
             # collect data in real environment
@@ -160,7 +227,7 @@ class Trainer:
                     metrics = self._evaluate(is_final=False)
                     utils.update_metrics(metrics, replay_buffer.metrics(), prefix='buffer/')
                     self.summarizer.append(metrics)
-                    wandb.log(self.summarizer.summarize())
+                    self._log_metrics(self.summarizer.summarize(), phase='eval')
 
                 replay_buffer.step(collect_policy)
                 step_counter += 1
@@ -187,13 +254,13 @@ class Trainer:
 
             self.summarizer.append(metrics)
             if should_log:
-                wandb.log(self.summarizer.summarize())
+                self._log_metrics(self.summarizer.summarize(), phase='train')
 
         # final evaluation
         metrics = self._evaluate(is_final=True)
         utils.update_metrics(metrics, replay_buffer.metrics(), prefix='buffer/')
         self.summarizer.append(metrics)
-        wandb.log(self.summarizer.summarize())
+        self._log_metrics(self.summarizer.summarize(), phase='final_eval')
 
         # save final model
         if config['save']:
@@ -214,6 +281,9 @@ class Trainer:
         # pretrain observation model
         wm_total_batch_size = config['wm_batch_size'] * config['wm_sequence_length']
         budget = config['pretrain_budget'] * config['pretrain_obs_p']
+        total_budget = budget
+        next_report = 0
+        print(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] pretrain/obs: start budget={total_budget:.0f}', flush=True)
         while budget > 0:
             indices = torch.randperm(replay_buffer.size, device=replay_buffer.device)
             while len(indices) > 0 and budget > 0:
@@ -222,16 +292,22 @@ class Trainer:
                 o = replay_buffer.get_obs(idx, device=device)
                 _ = wm.optimize_pretrain_obs(o.unsqueeze(1))
                 budget -= idx.numel()
+                next_report = self._print_budget_progress('pretrain/obs', budget, total_budget, next_report)
 
         # encode all observations once, since the encoder does not change anymore
+        print(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] pretrain/encode_buffer: start', flush=True)
         indices = torch.arange(replay_buffer.size, dtype=torch.long, device=replay_buffer.device)
         o = replay_buffer.get_obs(indices.unsqueeze(0), prefix=1, device=device, return_next=True)  # 1 for context
         o = o.squeeze(0).unsqueeze(1)
         with torch.no_grad():
             z_dist = obs_model.eval().encode(o)
+        print(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] pretrain/encode_buffer: complete', flush=True)
 
         # pretrain dynamics model
         budget = config['pretrain_budget'] * config['pretrain_dyn_p']
+        total_budget = budget
+        next_report = 0
+        print(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] pretrain/dyn: start budget={total_budget:.0f}', flush=True)
         while budget > 0:
             for idx in replay_buffer.generate_uniform_indices(
                     config['wm_batch_size'], config['wm_sequence_length'], extra=2):  # 2 for context + next
@@ -243,11 +319,15 @@ class Trainer:
                 _, a, r, terminated, truncated, _ = replay_buffer.get_data(idx, device=device, prefix=1)
                 _ = wm.optimize_pretrain_dyn(z, a, r, terminated, truncated, target_logits)
                 budget -= idx.numel()
+                next_report = self._print_budget_progress('pretrain/dyn', budget, total_budget, next_report)
                 if budget <= 0:
                     break
 
         # pretrain ac
         budget = config['pretrain_budget'] * (1 - config['pretrain_obs_p'] + config['pretrain_dyn_p'])
+        total_budget = budget
+        next_report = 0
+        print(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] pretrain/ac: start budget={total_budget:.0f}', flush=True)
         while budget > 0:
             for idx in replay_buffer.generate_uniform_indices(
                     config['ac_batch_size'], config['ac_horizon'], extra=2):  # 2 for context + next
@@ -267,6 +347,7 @@ class Trainer:
                 z, r, g, d = [x[:, 1:] for x in (z, r, g, d)]
                 _ = ac.optimize_pretrain(z, h, r, g, d)
                 budget -= idx.numel()
+                next_report = self._print_budget_progress('pretrain/ac', budget, total_budget, next_report)
                 if budget <= 0:
                     break
         ac.sync_target()
