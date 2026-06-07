@@ -22,6 +22,10 @@ echo "== TWM H100 environment check =="
 echo "Root: $ROOT"
 echo "Log:  $LOG_FILE"
 
+if command -v git >/dev/null 2>&1 && [[ -d "$ROOT/.git" ]]; then
+    git config --global --add safe.directory "$ROOT" || true
+fi
+
 mark_fail() {
     echo "ERROR: $*"
     FAIL=1

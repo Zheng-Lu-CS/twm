@@ -72,6 +72,21 @@ wait_wave() {
     return "$failed"
 }
 
+print_failed_log_tails() {
+    echo
+    echo "Recent training log tails:"
+    local log
+    for log in "${TRAIN_LOGS[@]}"; do
+        echo
+        echo "===== $log ====="
+        if [[ -f "$log" ]]; then
+            tail -n 120 "$log"
+        else
+            echo "Log file not found."
+        fi
+    done
+}
+
 echo
 echo "== Wave 1: Breakout / Boxing =="
 launch_job Breakout "${GPUS[0]}"
@@ -83,6 +98,7 @@ if ! wait_wave "wave1" "$PID_BREAKOUT" "$PID_BOXING"; then
     echo "Wave 1 failed; Wave 2 will not be started."
     echo "Training logs:"
     printf '  %s\n' "${TRAIN_LOGS[@]}"
+    print_failed_log_tails
     exit 1
 fi
 
@@ -97,6 +113,7 @@ if ! wait_wave "wave2" "$PID_SEAQUEST" "$PID_ROADRUNNER"; then
     echo "Wave 2 failed."
     echo "Training logs:"
     printf '  %s\n' "${TRAIN_LOGS[@]}"
+    print_failed_log_tails
     exit 1
 fi
 

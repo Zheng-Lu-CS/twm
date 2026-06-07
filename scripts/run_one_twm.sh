@@ -68,6 +68,10 @@ echo "Seed: $SEED"
 echo "Log:  $LOG_FILE"
 echo "Time: $(date -Is)"
 
+if command -v git >/dev/null 2>&1 && [[ -d "$ROOT/.git" ]]; then
+    git config --global --add safe.directory "$ROOT" || true
+fi
+
 load_conda
 conda activate "$ENV_NAME"
 

@@ -127,3 +127,37 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+
+# experiment outputs
+logs/
+log/
+runs/
+outputs/
+output/
+results/
+checkpoints/
+checkpoint/
+ckpt/
+models/
+wandb/
+
+# large artifacts
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.npz
+*.npy
+*.mp4
+*.avi
+*.gif
+
+# Python/cache
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# local env
+.env
+.venv/
